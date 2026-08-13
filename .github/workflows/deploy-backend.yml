@@ -6,9 +6,7 @@ on:
       - main
     paths:
       - "backend/**"
-      - "k8s/backend-deployment.yaml"
-      - "k8s/backend-service.yaml"
-      - "k8s/namespace.yaml"
+      - "k8s/**"
       - ".github/workflows/deploy-backend.yml"
 
 jobs:
@@ -29,12 +27,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@v3
         with:
           credentials_json: '${{ secrets.GCP_CREDENTIALS }}'
 
       - name: Setup Google Cloud CLI
-        uses: google-github-actions/setup-gcloud@v2
+        uses: google-github-actions/setup-gcloud@v3
 
       - name: Configure Docker authentication
         run: |
@@ -54,11 +52,11 @@ jobs:
             $REGION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE_NAME:${{ github.sha }}
 
       - name: Get GKE credentials
-        run: |
-          gcloud container clusters get-credentials \
-            $CLUSTER_NAME \
-            --zone $CLUSTER_ZONE \
-            --project $PROJECT_ID
+        uses: google-github-actions/get-gke-credentials@v3
+        with:
+          cluster_name: ${{ env.CLUSTER_NAME }}
+          location: ${{ env.CLUSTER_ZONE }}
+          project_id: ${{ env.PROJECT_ID }}
 
       - name: Create namespace
         run: |
@@ -76,20 +74,13 @@ jobs:
             --dry-run=client \
             -o yaml | kubectl apply -f -
 
-      - name: Update backend image
-        run: |
-          kubectl set image deployment/jutecrm-backend \
-            backend=$REGION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE_NAME:${{ github.sha }} \
-            --namespace=jutecrm \
-            || true
-
-      - name: Apply backend deployment
+      - name: Deploy backend
         run: |
           kubectl apply \
             -f k8s/backend-deployment.yaml \
             -f k8s/backend-service.yaml
 
-      - name: Update backend image after deployment
+      - name: Update backend image
         run: |
           kubectl set image deployment/jutecrm-backend \
             backend=$REGION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE_NAME:${{ github.sha }} \
@@ -97,11 +88,6 @@ jobs:
 
       - name: Check deployment
         run: |
-          kubectl get deployment \
-            -n jutecrm
-
-          kubectl get pods \
-            -n jutecrm
-
-          kubectl get service \
-            -n jutecrm
+          kubectl get deployment -n jutecrm
+          kubectl get pods -n jutecrm
+          kubectl get service -n jutecrm
