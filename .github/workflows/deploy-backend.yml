@@ -1,0 +1,107 @@
+name: Deploy Backend
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "backend/**"
+      - "k8s/backend-deployment.yaml"
+      - "k8s/backend-service.yaml"
+      - "k8s/namespace.yaml"
+      - ".github/workflows/deploy-backend.yml"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      PROJECT_ID: billmonitor
+      REGION: asia-south1
+      CLUSTER_NAME: jutecrm-gke
+      CLUSTER_ZONE: asia-south1-a
+      REPOSITORY: jutecrm
+      IMAGE_NAME: backend
+
+    steps:
+
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: '${{ secrets.GCP_CREDENTIALS }}'
+
+      - name: Setup Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker authentication
+        run: |
+          gcloud auth configure-docker \
+            $REGION-docker.pkg.dev \
+            --quiet
+
+      - name: Build Backend Docker Image
+        run: |
+          docker build \
+            -t $REGION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE_NAME:${{ github.sha }} \
+            ./backend
+
+      - name: Push Backend Docker Image
+        run: |
+          docker push \
+            $REGION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE_NAME:${{ github.sha }}
+
+      - name: Get GKE credentials
+        run: |
+          gcloud container clusters get-credentials \
+            $CLUSTER_NAME \
+            --zone $CLUSTER_ZONE \
+            --project $PROJECT_ID
+
+      - name: Create namespace
+        run: |
+          kubectl apply -f k8s/namespace.yaml
+
+      - name: Create backend secret
+        run: |
+          kubectl create secret generic backend-secret \
+            --namespace=jutecrm \
+            --from-literal=DB_HOST=mysql \
+            --from-literal=DB_PORT=3306 \
+            --from-literal=DB_NAME="${{ secrets.DB_NAME }}" \
+            --from-literal=DB_USER="${{ secrets.DB_USER }}" \
+            --from-literal=DB_PASS="${{ secrets.DB_PASS }}" \
+            --dry-run=client \
+            -o yaml | kubectl apply -f -
+
+      - name: Update backend image
+        run: |
+          kubectl set image deployment/jutecrm-backend \
+            backend=$REGION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE_NAME:${{ github.sha }} \
+            --namespace=jutecrm \
+            || true
+
+      - name: Apply backend deployment
+        run: |
+          kubectl apply \
+            -f k8s/backend-deployment.yaml \
+            -f k8s/backend-service.yaml
+
+      - name: Update backend image after deployment
+        run: |
+          kubectl set image deployment/jutecrm-backend \
+            backend=$REGION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE_NAME:${{ github.sha }} \
+            --namespace=jutecrm
+
+      - name: Check deployment
+        run: |
+          kubectl get deployment \
+            -n jutecrm
+
+          kubectl get pods \
+            -n jutecrm
+
+          kubectl get service \
+            -n jutecrm
