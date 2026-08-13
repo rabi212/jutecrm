@@ -1,3 +1,4 @@
+```yaml
 name: Deploy MySQL
 
 on:
@@ -23,34 +24,84 @@ jobs:
 
     steps:
 
+      # --------------------------------------------------
+      # 1. Checkout repository
+      # --------------------------------------------------
       - name: Checkout source code
         uses: actions/checkout@v4
 
+
+      # --------------------------------------------------
+      # 2. Authenticate to Google Cloud
+      # --------------------------------------------------
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
         with:
           credentials_json: '${{ secrets.GCP_CREDENTIALS }}'
 
+
+      # --------------------------------------------------
+      # 3. Setup Google Cloud CLI
+      # --------------------------------------------------
       - name: Setup Google Cloud CLI
         uses: google-github-actions/setup-gcloud@v3
 
+
+      # --------------------------------------------------
+      # 4. Configure Artifact Registry authentication
+      # --------------------------------------------------
       - name: Configure Docker authentication
         run: |
           gcloud auth configure-docker \
             $REGION-docker.pkg.dev \
             --quiet
 
+
+      # --------------------------------------------------
+      # 5. Validate required GitHub Secrets
+      # --------------------------------------------------
+      - name: Validate MySQL secrets
+        run: |
+          if [ -z "${{ secrets.MYSQL_ROOT_PASSWORD }}" ]; then
+            echo "ERROR: MYSQL_ROOT_PASSWORD GitHub Secret is not configured."
+            exit 1
+          fi
+
+          if [ -z "${{ secrets.MYSQL_PASSWORD }}" ]; then
+            echo "ERROR: MYSQL_PASSWORD GitHub Secret is not configured."
+            exit 1
+          fi
+
+          if [ -z "${{ secrets.DB_USER }}" ]; then
+            echo "ERROR: DB_USER GitHub Secret is not configured."
+            exit 1
+          fi
+
+          echo "Required MySQL secrets are configured."
+
+
+      # --------------------------------------------------
+      # 6. Build MySQL Docker image
+      # --------------------------------------------------
       - name: Build MySQL Docker image
         run: |
           docker build \
             -t $REGION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE_NAME:${{ github.sha }} \
             ./database
 
+
+      # --------------------------------------------------
+      # 7. Push MySQL image to Artifact Registry
+      # --------------------------------------------------
       - name: Push MySQL Docker image
         run: |
           docker push \
             $REGION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE_NAME:${{ github.sha }}
 
+
+      # --------------------------------------------------
+      # 8. Get GKE credentials
+      # --------------------------------------------------
       - name: Get GKE credentials
         uses: google-github-actions/get-gke-credentials@v3
         with:
@@ -58,11 +109,19 @@ jobs:
           location: ${{ env.CLUSTER_ZONE }}
           project_id: ${{ env.PROJECT_ID }}
 
+
+      # --------------------------------------------------
+      # 9. Create namespace
+      # --------------------------------------------------
       - name: Create namespace
         run: |
           kubectl apply \
             -f k8s/namespace.yaml
 
+
+      # --------------------------------------------------
+      # 10. Create / update MySQL Secret
+      # --------------------------------------------------
       - name: Create MySQL secret
         run: |
           kubectl create secret generic mysql-secret \
@@ -73,23 +132,49 @@ jobs:
             --dry-run=client \
             -o yaml | kubectl apply -f -
 
+
+      # --------------------------------------------------
+      # 11. Create / verify MySQL PVC
+      # --------------------------------------------------
       - name: Create MySQL PVC
         run: |
           kubectl apply \
             -f k8s/mysql-pvc.yaml
 
+
+      # --------------------------------------------------
+      # 12. Prepare StatefulSet with exact image tag
+      # --------------------------------------------------
       - name: Prepare MySQL StatefulSet
         run: |
           sed -i \
             "s/IMAGE_TAG/${{ github.sha }}/g" \
             k8s/mysql-statefulset.yaml
 
+
+      # --------------------------------------------------
+      # 13. Deploy MySQL StatefulSet and Service
+      # --------------------------------------------------
       - name: Deploy MySQL
         run: |
           kubectl apply \
             -f k8s/mysql-statefulset.yaml \
             -f k8s/mysql-service.yaml
 
+
+      # --------------------------------------------------
+      # 14. Restart existing MySQL Pod
+      # --------------------------------------------------
+      - name: Restart MySQL Pod
+        run: |
+          kubectl delete pod mysql-0 \
+            --namespace=jutecrm \
+            --ignore-not-found
+
+
+      # --------------------------------------------------
+      # 15. Wait for MySQL
+      # --------------------------------------------------
       - name: Wait for MySQL rollout
         run: |
           kubectl rollout status \
@@ -97,13 +182,18 @@ jobs:
             -n jutecrm \
             --timeout=300s
 
-      - name: Check MySQL
+
+      # --------------------------------------------------
+      # 16. Verify MySQL resources
+      # --------------------------------------------------
+      - name: Check MySQL deployment
         run: |
           echo "======================================"
           echo "MySQL StatefulSet"
           echo "======================================"
 
           kubectl get statefulset \
+            mysql \
             -n jutecrm
 
           echo ""
@@ -133,3 +223,4 @@ jobs:
           kubectl get pvc \
             mysql-pvc \
             -n jutecrm
+```
